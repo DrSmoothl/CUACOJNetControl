@@ -1,0 +1,18 @@
+{
+  "addr": ":8080",
+  "tls": {
+    "enable": false,
+    "cert_file": "",
+    "key_file": ""
+  },
+  "client_token": "",
+  "static_dir": "web/admin",
+  "initial_domains": [
+    "yzh-acm.com"
+  ],
+  "control_enabled": false,
+  "whitelist_clients": [],
+  "per_client": {},
+  "client_version": "0.1.0",
+  "update_dir": "updates"
+}

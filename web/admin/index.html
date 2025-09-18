@@ -1,0 +1,347 @@
+<!doctype html>
+<html data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <title>CUACOJ NetControl</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+  <style>
+    .muted{color:#64748b}
+    body{
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(59,130,246,0.10), transparent 60%),
+                  radial-gradient(1000px 500px at 110% 10%, rgba(16,185,129,0.10), transparent 60%),
+                  linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+      min-height: 100vh;
+    }
+    .bg-blur-blob{
+      position: fixed; z-index: -1; filter: blur(40px); opacity: .45;
+      width: 320px; height: 320px; border-radius: 50%;
+      box-shadow: 0 0 120px 40px currentColor;
+      animation: float 12s ease-in-out infinite;
+    }
+    .blob-1{ top: -60px; left: -60px; color: #93c5fd; animation-delay: 0s; }
+    .blob-2{ bottom: -80px; right: -80px; color: #a7f3d0; animation-delay: 2s; }
+    @keyframes float{ 0%,100%{ transform: translateY(0) } 50%{ transform: translateY(18px) } }
+    .card{ transition: transform .2s ease, box-shadow .2s ease; }
+    .card:hover{ transform: translateY(-2px); box-shadow: 0 10px 24px rgba(2,6,23,.12), 0 2px 8px rgba(2,6,23,.06); }
+    .tabs{ box-shadow: 0 6px 18px rgba(2,6,23,.06); }
+    [role=tab].tab{ transition: background-color .2s ease, transform .15s ease; }
+    [role=tab].tab:active{ transform: scale(.98); }
+    section[data-panel]{
+      opacity: 1; transform: translateY(0); transition: opacity .25s ease, transform .25s ease;
+    }
+    section[data-panel].hidden{ opacity: 0; transform: translateY(6px); }
+  </style>
+</head>
+<body class="p-4">
+  <div class="bg-blur-blob blob-1"></div>
+  <div class="bg-blur-blob blob-2"></div>
+  <h1 class="text-3xl font-bold mb-2">CUACOJ NetControl</h1>
+  <div class="muted mb-4" id="addr"></div>
+
+  <div role="tablist" class="tabs tabs-boxed">
+    <a role="tab" class="tab tab-active" data-tab="main">总管理</a>
+    <a role="tab" class="tab" data-tab="clients">客户端管理</a>
+    <a role="tab" class="tab" data-tab="whitelist">白名单管理</a>
+    <a role="tab" class="tab" data-tab="events">最近事件</a>
+    <a role="tab" class="tab" data-tab="version">版本管理</a>
+  </div>
+
+  <!-- 总管理 -->
+  <section data-panel="main" class="mt-4">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h3 class="card-title">访问控制与域名</h3>
+        <label class="label cursor-pointer justify-start gap-2"><input type="checkbox" id="enabled" class="toggle toggle-info"> <span>启用访问控制</span></label>
+        <div class="text-sm muted">修改后点击保存，立即广播到所有客户端</div>
+        <textarea id="domains" rows="8" placeholder="每行一个域名" class="textarea textarea-bordered w-full"></textarea>
+        <div class="card-actions justify-end">
+          <button id="saveBtn" class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 客户端管理 -->
+  <section data-panel="clients" class="mt-4 hidden">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h3 class="card-title">客户端管理</h3>
+        <div class="flex items-center gap-2 mb-2">
+          <input id="search" type="text" placeholder="按名称过滤" class="input input-bordered w-full max-w-xs">
+          <select id="onlineFilter" class="select select-bordered">
+            <option value="all">全部</option>
+            <option value="online">仅在线</option>
+            <option value="offline">仅离线</option>
+          </select>
+          <div class="flex-1"></div>
+          <button id="btnEnable" class="btn btn-success btn-sm">批量启用</button>
+          <button id="btnDisable" class="btn btn-error btn-sm">批量禁用</button>
+          <button id="btnInherit" class="btn btn-ghost btn-sm">批量继承全局</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="table table-sm">
+            <thead><tr><th><input type="checkbox" id="chkAll" class="checkbox checkbox-sm"></th><th>名称</th><th>在线</th><th>状态</th><th>最近</th><th>操作</th></tr></thead>
+            <tbody id="clientsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 白名单管理 -->
+  <section data-panel="whitelist" class="mt-4 hidden">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h3 class="card-title">白名单管理</h3>
+        <div class="text-sm muted">列表中的客户端名称将不受限制（每行一个名称）</div>
+        <textarea id="whiteNames" rows="12" placeholder="每行一个客户端名称" class="textarea textarea-bordered w-full"></textarea>
+        <div class="card-actions justify-end">
+          <button id="saveWhitelist" class="btn btn-info">保存白名单</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 最近事件（仅最新50条） -->
+  <section data-panel="events" class="mt-4 hidden">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h3 class="card-title">最近事件（最新50条）</h3>
+        <div class="flex items-center gap-2 mb-2">
+          <input id="eventSearch" type="text" placeholder="按客户端/域名/IP 过滤" class="input input-bordered">
+          <select id="allowFilter" class="select select-bordered">
+            <option value="all">全部</option>
+            <option value="allow">允许</option>
+            <option value="deny">阻止</option>
+          </select>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="table table-sm">
+            <thead><tr><th>时间</th><th>客户端</th><th>协议</th><th>远端</th><th>域名</th><th>是否允许</th></tr></thead>
+            <tbody id="eventsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 版本管理 -->
+  <section data-panel="version" class="mt-4 hidden">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h3 class="card-title">客户端版本管理</h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <div class="muted">当前版本</div>
+            <div id="curVersion" class="text-lg font-semibold">-</div>
+          </div>
+          <div class="col-span-2">
+            <div class="muted">各平台包</div>
+            <table class="table table-sm">
+              <thead><tr><th>平台</th><th>文件</th><th>状态</th></tr></thead>
+              <tbody id="pkgBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <form id="uploadForm" class="flex items-center gap-2">
+          <select id="targetPlatform" class="select select-bordered">
+            <option value="windows-amd64">windows-amd64</option>
+            <option value="linux-amd64">linux-amd64</option>
+            <option value="darwin-amd64">darwin-amd64</option>
+            <option value="darwin-arm64">darwin-arm64</option>
+          </select>
+          <input id="fileInput" type="file" class="file-input file-input-bordered" />
+          <input id="newVersion" type="text" placeholder="新版本号(可选)" class="input input-bordered" />
+          <button class="btn btn-primary" type="submit">上传并替换</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const addrEl = $('#addr');
+
+async function loadConfig(){
+  const cfg = await (await fetch('/api/config')).json();
+  $('#enabled').checked = cfg.control_enabled;
+  $('#domains').value = (cfg.domains||[]).join('\n');
+  addrEl.textContent = '';
+}
+
+async function loadWhitelist(){
+  try{
+    const data = await (await fetch('/api/whitelist')).json();
+    $('#whiteNames').value = (data.names||[]).join('\n');
+  }catch(e){}
+}
+
+function filterClients(list){
+  const q = ($('#search').value||'').toLowerCase();
+  const f = $('#onlineFilter').value;
+  return list.filter(c => {
+    if (q && !c.name.toLowerCase().includes(q)) return false;
+    if (f==='online' && !c.online) return false;
+    if (f==='offline' && c.online) return false;
+    return true;
+  });
+}
+
+function renderClients(list){
+  const tb = $('#clientsBody'); tb.innerHTML='';
+  for(const c of list){
+    const tr = document.createElement('tr');
+    tr.innerHTML = [
+      '<td><input type="checkbox" class="rowChk checkbox checkbox-sm" data-name="'+c.name+'"></td>',
+      '<td>'+c.name+'</td>',
+      '<td>'+(c.online?'在线':'离线')+'</td>',
+      '<td>'+(c.control_enabled?'已启用':'未启用')+'</td>',
+      '<td>'+new Date(c.last_seen_unix*1000).toLocaleTimeString()+'</td>',
+      '<td>'+(c.online?('<button class="btn btn-xs btn-outline" data-act="addwl" data-name="'+c.name+'">加入白名单</button>'):'')+'</td>'
+    ].join('');
+    tb.appendChild(tr);
+  }
+}
+
+async function loadClients(){
+  const list = await (await fetch('/api/clients')).json();
+  renderClients(filterClients(list));
+}
+
+function filterEvents(list){
+  const q = ($('#eventSearch').value||'').toLowerCase();
+  const f = $('#allowFilter').value;
+  return list.filter(e => {
+    const composite = [e.name, e.domain, e.remote_ip, String(e.remote_port)].filter(Boolean).join(' ').toLowerCase();
+    if (q && !composite.includes(q)) return false;
+    if (f==='allow' && !e.allowed) return false;
+    if (f==='deny' && e.allowed) return false;
+    return true;
+  });
+}
+
+function renderEvents(list){
+  const tb = $('#eventsBody'); tb.innerHTML='';
+  const latest = list.slice(-50).reverse();
+  for(const e of latest){
+    const tr = document.createElement('tr');
+    const addr = e.remote_ip + ':' + e.remote_port;
+    tr.innerHTML = ['<td>'+new Date(e.time_unix*1000).toLocaleTimeString()+'</td>',
+      '<td>'+e.name+'</td>','<td>'+e.proto+'</td>',
+      '<td>'+addr+'</td>','<td>'+(e.domain||'')+'</td>',
+      '<td>'+(e.allowed?'允许':'阻止')+'</td>'].join('');
+    tb.appendChild(tr);
+  }
+}
+
+let allEvents=[];
+async function loadEvents(){
+  allEvents = await (await fetch('/api/events')).json();
+  const filtered = filterEvents(allEvents);
+  renderEvents(filtered);
+}
+
+$('#saveBtn').addEventListener('click', async () =>{
+  const enabled = $('#enabled').checked;
+  const domains = $('#domains').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_enabled:enabled,domains})});
+  loadClients();
+});
+
+$('#saveWhitelist').addEventListener('click', async ()=>{
+  const names = $('#whiteNames').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  await fetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})});
+  loadClients();
+});
+
+['search','onlineFilter'].forEach(id=>{
+  $('#'+id).addEventListener('input', loadClients);
+  $('#'+id).addEventListener('change', loadClients);
+});
+['eventSearch','allowFilter'].forEach(id=>{
+  $('#'+id).addEventListener('input', loadEvents);
+  $('#'+id).addEventListener('change', loadEvents);
+});
+
+// 移除分页/导出，仅显示最新50条
+
+// batch helpers
+function selectedNames(){ return Array.from(document.querySelectorAll('.rowChk:checked')).map(el=>el.getAttribute('data-name')); }
+$('#chkAll').addEventListener('change', ()=>{
+  const on = $('#chkAll').checked; document.querySelectorAll('.rowChk').forEach(el=>el.checked=on);
+});
+async function postBatch(val){
+  const names = selectedNames(); if(!names.length){ return }
+  await fetch('/api/clients/batch_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names,control_enabled:val})});
+  loadClients();
+}
+$('#btnEnable').addEventListener('click', ()=>postBatch(true));
+$('#btnDisable').addEventListener('click', ()=>postBatch(false));
+$('#btnInherit').addEventListener('click', ()=>postBatch(null));
+
+loadConfig(); loadWhitelist(); loadClients(); loadEvents();
+setInterval(loadClients, 3000);
+setInterval(loadEvents, 3000);
+
+// nav 切换
+document.querySelectorAll('[role=tab]').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('[role=tab]').forEach(t=>t.classList.remove('tab-active'));
+    tab.classList.add('tab-active');
+    const id = tab.getAttribute('data-tab');
+    document.querySelectorAll('section[data-panel]').forEach(sec=>{
+      sec.classList.toggle('hidden', sec.getAttribute('data-panel')!==id);
+    });
+  });
+});
+
+// 客户端快速加入白名单
+document.body.addEventListener('click', async (e)=>{
+  const btn = e.target.closest('button[data-act="addwl"]');
+  if(!btn) return;
+  const nm = btn.getAttribute('data-name');
+  try{
+    const data = await (await fetch('/api/whitelist')).json();
+    const names = new Set((data.names||[])); names.add(nm);
+    await fetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:[...names]})});
+    alert('已加入白名单');
+  }catch(err){ alert('操作失败'); }
+});
+
+// --- Version management ---
+async function refreshVersion(){
+  const osarch = [
+    ['windows','amd64'],['linux','amd64'],['darwin','amd64'],['darwin','arm64']
+  ];
+  // reuse one os/arch to get version
+  const meta = await (await fetch('/api/client_update?os=windows&arch=amd64')).json();
+  $('#curVersion').textContent = meta.version || '-';
+  const tb = $('#pkgBody'); tb.innerHTML='';
+  for(const [osn,arch] of osarch){
+    const row = document.createElement('tr');
+    const ext = osn==='windows'?'.exe':'';
+    const fname = `client-${osn}-${arch}${ext}`;
+    // HEAD check
+    const res = await fetch(`/download/client?os=${osn}&arch=${arch}`, {method:'HEAD'});
+    const ok = res.status===200;
+    row.innerHTML = `<td>${osn}-${arch}</td><td>${fname}</td><td>${ok?'存在':'缺失'}</td>`;
+    tb.appendChild(row);
+  }
+}
+refreshVersion();
+
+$('#uploadForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const pf = $('#targetPlatform').value.split('-'); const osn = pf[0]; const arch = pf[1];
+  const f = $('#fileInput').files[0]; if(!f){ alert('请选择文件'); return }
+  const ver = $('#newVersion').value.trim();
+  const fd = new FormData(); fd.append('file', f); if(ver) fd.append('version', ver);
+  const resp = await fetch(`/admin/upload?os=${osn}&arch=${arch}`, {method:'POST', body:fd});
+  if(resp.ok){ alert('上传成功'); refreshVersion(); } else { alert('上传失败'); }
+});
+</script>
+</body>
+</html>
