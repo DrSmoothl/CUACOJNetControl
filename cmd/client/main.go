@@ -269,8 +269,16 @@ func run(url, name, token string) error {
 	defer refresh.Stop()
 
 	// platform functions (no-op on non-windows)
-	apply := func() {}
-	clear := func() {}
+	apply := func() {
+		if os.Getenv("NETCTRL_DEBUG") != "" {
+			log.Printf("[APPLY] (noop platform) enabled=%v domains=%v", controlEnabled, allowedDomains)
+		}
+	}
+	clear := func() {
+		if os.Getenv("NETCTRL_DEBUG") != "" {
+			log.Printf("[CLEAR] (noop platform)")
+		}
+	}
 
 	// platform-specific imports via build tags
 	if runtime.GOOS == "windows" {
@@ -280,9 +288,19 @@ func run(url, name, token string) error {
 			servers := cc.DNSServers
 			if len(servers) == 0 {
 				servers = parseDNSServers(os.Getenv("NETCTRL_DNS_SERVERS"))
+			} else {
+				// normalize to host:53 if port missing
+				for i, s := range servers {
+					s = strings.TrimSpace(s)
+					if s != "" && !strings.Contains(s, ":") {
+						servers[i] = s + ":53"
+					} else {
+						servers[i] = s
+					}
+				}
 			}
 			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[APPLY] domains=%v dns=%v", allowedDomains, servers)
+				log.Printf("[APPLY] start enabled=%v domains=%v dns=%v", controlEnabled, allowedDomains, servers)
 			}
 			m, ips := resolveDomainsMapWithServers(allowedDomains, servers)
 			allowedIPDomain = m
@@ -300,6 +318,9 @@ func run(url, name, token string) error {
 			}
 			_ = fwApply(controlEnabled, ips)
 			if controlEnabled {
+				if os.Getenv("NETCTRL_DEBUG") != "" {
+					log.Printf("[APPLY] allow control server by url=%s", url)
+				}
 				allowServerByURL(url)
 				if err := updateHosts(domToIPs); err != nil {
 					log.Printf("[HOSTS] update error: %v", err)
@@ -307,13 +328,22 @@ func run(url, name, token string) error {
 					log.Printf("[HOSTS] updated entries=%d", len(domToIPs))
 				}
 			}
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[APPLY] done enabled=%v", controlEnabled)
+			}
 		}
 		clear = func() {
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[CLEAR] start")
+			}
 			_ = fwClear()
 			if err := clearHostsBlock(); err != nil {
 				log.Printf("[HOSTS] clear error: %v", err)
 			} else if os.Getenv("NETCTRL_DEBUG") != "" {
 				log.Printf("[HOSTS] cleared")
+			}
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[CLEAR] done")
 			}
 		}
 	}
@@ -382,6 +412,13 @@ func run(url, name, token string) error {
 				if c.Raddr.IP == "127.0.0.1" || c.Raddr.IP == "::1" {
 					allowed = true
 				}
+				if os.Getenv("NETCTRL_DEBUG") != "" {
+					if allowed {
+						log.Printf("[EVENT] allow %s:%d domain=%s", c.Raddr.IP, c.Raddr.Port, dom)
+					} else {
+						log.Printf("[EVENT] deny %s:%d (no match)", c.Raddr.IP, c.Raddr.Port)
+					}
+				}
 				evt := proto.NetEvent{Name: name, TimeUnix: now.Unix(), Proto: "tcp", RemoteIP: c.Raddr.IP, RemotePort: int(c.Raddr.Port), Allowed: allowed, Domain: dom}
 				if err := ws.WriteJSON(proto.Envelope{Type: proto.MsgNetEvent, Data: evt}); err == nil {
 					tickSent++
@@ -407,6 +444,9 @@ func run(url, name, token string) error {
 		// non-blocking apply
 		select {
 		case <-refresh.C:
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[TICK] refresh domains apply, enabled=%v", controlEnabled)
+			}
 			if controlEnabled {
 				apply()
 			}

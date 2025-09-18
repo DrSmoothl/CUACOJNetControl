@@ -48,12 +48,26 @@ func DisableDefaultBlock() error {
 
 func ClearRules() error {
 	// delete existing rules with our prefix
-	return run("firewall", "delete", "rule", fmt.Sprintf("name=%s", rulePrefix))
+	if err := run("firewall", "delete", "rule", fmt.Sprintf("name=%s", rulePrefix)); err != nil {
+		// 当不存在匹配规则时，netsh 会返回非零退出码（例如“没有规则符合指定条件”），
+		// 这不是致命错误，忽略以保证后续 EnableDefaultBlock/Allow* 能继续执行。
+		if isDebug() {
+			log.Printf("[FW] ClearRules ignore error: %v", err)
+		}
+		return nil
+	}
+	return nil
 }
 
 func AllowIPs(ips []net.IP) error {
 	if len(ips) == 0 {
+		if isDebug() {
+			log.Printf("[FW] AllowIPs skipped: no IPs")
+		}
 		return nil
+	}
+	if isDebug() {
+		log.Printf("[FW] AllowIPs applying %d IPs", len(ips))
 	}
 	// chunk into groups due to max command length
 	const chunk = 50
