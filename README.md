@@ -93,6 +93,7 @@ CUACOJ NetControl
 日志
 - 滚动文件日志位于 `logs/` 目录，支持最大大小、保留份数、保留天数配置（环境变量）。
 - 客户端事件上报含去抖（10s）与速率限制（每 Tick / 每分钟）。
+ - 调试：设置环境变量 `NETCTRL_DEBUG=1` 可输出更详细的调试日志（DNS 解析、策略应用、以及 Windows 防火墙执行的 `netsh advfirewall` 命令与输出）。
 
 安全
 - 客户端通过 Bearer Token 鉴权，服务端可选择开启 TLS/WSS。

@@ -104,7 +104,9 @@ func resolveOneName(name string, servers []string) []net.IP {
 			}
 			if os.Getenv("NETCTRL_DEBUG") != "" {
 				rc := -1
-				if in != nil { rc = in.Rcode }
+				if in != nil {
+					rc = in.Rcode
+				}
 				log.Printf("[DNS] query %s type %d via %s err=%v rcode=%d", fqdn, qtype, srv, err, rc)
 			}
 		}
@@ -189,7 +191,9 @@ func main() {
 
 	// Optional stop password in console mode
 	stopPass := *stopPassFlag
-	if os.Getenv("NETCTRL_DEBUG") != "" { log.Printf("[BOOT] debug on, version=%s", version) }
+	if os.Getenv("NETCTRL_DEBUG") != "" {
+		log.Printf("[BOOT] debug on, version=%s", version)
+	}
 	if stopPass == "" {
 		stopPass = os.Getenv("NETCTRL_STOP_PASSWORD")
 	}
@@ -277,7 +281,9 @@ func run(url, name, token string) error {
 			if len(servers) == 0 {
 				servers = parseDNSServers(os.Getenv("NETCTRL_DNS_SERVERS"))
 			}
-			if os.Getenv("NETCTRL_DEBUG") != "" { log.Printf("[APPLY] domains=%v dns=%v", allowedDomains, servers) }
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[APPLY] domains=%v dns=%v", allowedDomains, servers)
+			}
 			m, ips := resolveDomainsMapWithServers(allowedDomains, servers)
 			allowedIPDomain = m
 			// update hosts file to pin domains -> IPs (help against DoH bypass)
@@ -289,16 +295,26 @@ func run(url, name, token string) error {
 				}
 				domToIPs[d] = append(domToIPs[d], ip)
 			}
-			if os.Getenv("NETCTRL_DEBUG") != "" { log.Printf("[APPLY] resolved IPs=%v", ips) }
+			if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[APPLY] resolved IPs=%v", ips)
+			}
 			_ = fwApply(controlEnabled, ips)
 			if controlEnabled {
 				allowServerByURL(url)
-				_ = updateHosts(domToIPs)
+				if err := updateHosts(domToIPs); err != nil {
+					log.Printf("[HOSTS] update error: %v", err)
+				} else if os.Getenv("NETCTRL_DEBUG") != "" {
+					log.Printf("[HOSTS] updated entries=%d", len(domToIPs))
+				}
 			}
 		}
 		clear = func() {
 			_ = fwClear()
-			_ = clearHostsBlock()
+			if err := clearHostsBlock(); err != nil {
+				log.Printf("[HOSTS] clear error: %v", err)
+			} else if os.Getenv("NETCTRL_DEBUG") != "" {
+				log.Printf("[HOSTS] cleared")
+			}
 		}
 	}
 

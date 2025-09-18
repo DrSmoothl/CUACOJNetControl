@@ -4,11 +4,11 @@ package fw
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
-	"log"
-	"os"
 )
 
 // Strategy: default outbound = block; allow whitelist IPs via rules.
