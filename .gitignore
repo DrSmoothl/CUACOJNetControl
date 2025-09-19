@@ -5,3 +5,4 @@ server.exe
 dist/
 *.iss
 *.ps1
+data/

@@ -32,9 +32,32 @@
       opacity: 1; transform: translateY(0); transition: opacity .25s ease, transform .25s ease;
     }
     section[data-panel].hidden{ opacity: 0; transform: translateY(6px); }
+    .token-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172acc,#1e293bcc);backdrop-filter:blur(6px);z-index:9999;}
+    .token-box{width:100%;max-width:420px;padding:32px;border-radius:20px;background:rgba(255,255,255,.9);box-shadow:0 20px 50px -12px rgba(0,0,0,.25);animation:scaleIn .35s ease;}
+    @keyframes scaleIn{0%{transform:scale(.92);opacity:0}100%{transform:scale(1);opacity:1}}
+    .token-overlay h2{font-size:1.4rem;font-weight:600;margin:0 0 8px}
+    .token-overlay p{font-size:.85rem;line-height:1.4;color:#475569;margin-bottom:16px}
+    .hidden{display:none !important}
   </style>
 </head>
 <body class="p-4">
+  <div id="tokenOverlay" class="token-overlay hidden">
+    <div class="token-box">
+      <h2>访问授权</h2>
+      <p>首次部署或 Token 变更后需输入后端生成的管理访问 Token。该值只在后端首次启动时打印一次（或删除 data/token 重置）。</p>
+      <form id="tokenForm" class="flex flex-col gap-3">
+        <input id="tokenInput" type="password" placeholder="粘贴 Token" class="input input-bordered w-full" autocomplete="off" spellcheck="false" />
+        <div class="flex items-center gap-2">
+          <button class="btn btn-primary flex-1" type="submit">进入</button>
+          <button type="button" id="clearStored" class="btn btn-ghost btn-sm">清除</button>
+        </div>
+        <div id="tokenErr" class="text-error text-sm h-5"></div>
+      </form>
+      <div class="text-xs mt-4 text-slate-500 leading-relaxed">
+        提示：页面会把 Token 存在浏览器 localStorage（仅当前主机）。如需移除请点击“清除”或清空浏览器存储。
+      </div>
+    </div>
+  </div>
   <div class="bg-blur-blob blob-1"></div>
   <div class="bg-blur-blob blob-2"></div>
   <h1 class="text-3xl font-bold mb-2">CUACOJ NetControl</h1>
@@ -165,8 +188,50 @@
 const $ = sel => document.querySelector(sel);
 const addrEl = $('#addr');
 
+// --- Token + 授权封装 ---
+const TOKEN_KEY = 'netctrl_admin_token';
+function getStoredToken(){ return localStorage.getItem(TOKEN_KEY)||'' }
+function setStoredToken(v){ if(v) localStorage.setItem(TOKEN_KEY,v); }
+function clearStoredToken(){ localStorage.removeItem(TOKEN_KEY); }
+
+const overlay = document.getElementById('tokenOverlay');
+const tokenInput = document.getElementById('tokenInput');
+const tokenErr = document.getElementById('tokenErr');
+function showOverlay(msg){ if(msg) tokenErr.textContent=msg; overlay.classList.remove('hidden'); setTimeout(()=>tokenInput.focus(),30); }
+function hideOverlay(){ overlay.classList.add('hidden'); tokenErr.textContent=''; }
+
+async function apiFetch(url, opts={}){
+  opts.headers = opts.headers || {};
+  const tk = getStoredToken();
+  if(tk) opts.headers['Authorization'] = 'Bearer '+tk;
+  let resp = await fetch(url, opts);
+  if(resp.status === 401){
+    // 仅在我们已附带 token 或访问受保护接口时提示
+    if(tk){ clearStoredToken(); }
+    showOverlay('需要有效 Token');
+    throw new Error('unauthorized');
+  }
+  return resp;
+}
+
+document.getElementById('tokenForm').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const val = tokenInput.value.trim();
+  if(!val){ tokenErr.textContent='请输入 Token'; return }
+  tokenErr.textContent='';
+  try{
+    setStoredToken(val);
+    // 探测一个受保护接口
+    const test = await apiFetch('/api/config');
+    if(test.ok){ hideOverlay(); initAfterAuth(); }
+    else { throw new Error('fail'); }
+  }catch(err){ clearStoredToken(); tokenErr.textContent='无效或已过期'; }
+});
+document.getElementById('clearStored').addEventListener('click', ()=>{ clearStoredToken(); tokenInput.value=''; tokenErr.textContent='已清除'; tokenInput.focus(); });
+
+// --- 原业务逻辑(改为使用 apiFetch) ---
 async function loadConfig(){
-  const cfg = await (await fetch('/api/config')).json();
+  const cfg = await (await apiFetch('/api/config')).json();
   $('#enabled').checked = cfg.control_enabled;
   $('#domains').value = (cfg.domains||[]).join('\n');
   addrEl.textContent = '';
@@ -174,7 +239,7 @@ async function loadConfig(){
 
 async function loadWhitelist(){
   try{
-    const data = await (await fetch('/api/whitelist')).json();
+    const data = await (await apiFetch('/api/whitelist')).json();
     $('#whiteNames').value = (data.names||[]).join('\n');
   }catch(e){}
 }
@@ -207,7 +272,7 @@ function renderClients(list){
 }
 
 async function loadClients(){
-  const list = await (await fetch('/api/clients')).json();
+  const list = await (await apiFetch('/api/clients')).json();
   renderClients(filterClients(list));
 }
 
@@ -239,7 +304,7 @@ function renderEvents(list){
 
 let allEvents=[];
 async function loadEvents(){
-  allEvents = await (await fetch('/api/events')).json();
+  allEvents = await (await apiFetch('/api/events')).json();
   const filtered = filterEvents(allEvents);
   renderEvents(filtered);
 }
@@ -247,13 +312,13 @@ async function loadEvents(){
 $('#saveBtn').addEventListener('click', async () =>{
   const enabled = $('#enabled').checked;
   const domains = $('#domains').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_enabled:enabled,domains})});
+  await apiFetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_enabled:enabled,domains})});
   loadClients();
 });
 
 $('#saveWhitelist').addEventListener('click', async ()=>{
   const names = $('#whiteNames').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  await fetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})});
+  await apiFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})});
   loadClients();
 });
 
@@ -275,16 +340,19 @@ $('#chkAll').addEventListener('change', ()=>{
 });
 async function postBatch(val){
   const names = selectedNames(); if(!names.length){ return }
-  await fetch('/api/clients/batch_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names,control_enabled:val})});
+  await apiFetch('/api/clients/batch_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names,control_enabled:val})});
   loadClients();
 }
 $('#btnEnable').addEventListener('click', ()=>postBatch(true));
 $('#btnDisable').addEventListener('click', ()=>postBatch(false));
 $('#btnInherit').addEventListener('click', ()=>postBatch(null));
 
-loadConfig(); loadWhitelist(); loadClients(); loadEvents();
-setInterval(loadClients, 3000);
-setInterval(loadEvents, 3000);
+function initAfterAuth(){
+  loadConfig(); loadWhitelist(); loadClients(); loadEvents();
+  setInterval(loadClients, 3000);
+  setInterval(loadEvents, 3000);
+  refreshVersion();
+}
 
 // nav 切换
 document.querySelectorAll('[role=tab]').forEach(tab=>{
@@ -304,9 +372,9 @@ document.body.addEventListener('click', async (e)=>{
   if(!btn) return;
   const nm = btn.getAttribute('data-name');
   try{
-    const data = await (await fetch('/api/whitelist')).json();
+    const data = await (await apiFetch('/api/whitelist')).json();
     const names = new Set((data.names||[])); names.add(nm);
-    await fetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:[...names]})});
+    await apiFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:[...names]})});
     alert('已加入白名单');
   }catch(err){ alert('操作失败'); }
 });
@@ -317,7 +385,7 @@ async function refreshVersion(){
     ['windows','amd64'],['linux','amd64'],['darwin','amd64'],['darwin','arm64']
   ];
   // reuse one os/arch to get version
-  const meta = await (await fetch('/api/client_update?os=windows&arch=amd64')).json();
+  const meta = await (await apiFetch('/api/client_update?os=windows&arch=amd64')).json();
   $('#curVersion').textContent = meta.version || '-';
   const tb = $('#pkgBody'); tb.innerHTML='';
   for(const [osn,arch] of osarch){
@@ -325,7 +393,7 @@ async function refreshVersion(){
     const ext = osn==='windows'?'.exe':'';
     const fname = `client-${osn}-${arch}${ext}`;
     // HEAD check
-    const res = await fetch(`/download/client?os=${osn}&arch=${arch}`, {method:'HEAD'});
+  const res = await apiFetch(`/download/client?os=${osn}&arch=${arch}`, {method:'HEAD'});
     const ok = res.status===200;
     row.innerHTML = `<td>${osn}-${arch}</td><td>${fname}</td><td>${ok?'存在':'缺失'}</td>`;
     tb.appendChild(row);
@@ -339,9 +407,18 @@ $('#uploadForm').addEventListener('submit', async (e)=>{
   const f = $('#fileInput').files[0]; if(!f){ alert('请选择文件'); return }
   const ver = $('#newVersion').value.trim();
   const fd = new FormData(); fd.append('file', f); if(ver) fd.append('version', ver);
-  const resp = await fetch(`/admin/upload?os=${osn}&arch=${arch}`, {method:'POST', body:fd});
+  const resp = await apiFetch(`/admin/upload?os=${osn}&arch=${arch}`, {method:'POST', body:fd});
   if(resp.ok){ alert('上传成功'); refreshVersion(); } else { alert('上传失败'); }
 });
+
+// 初始尝试自动认证；无 token 或失败则弹窗
+(async () => {
+  const existing = getStoredToken();
+  if(!existing){ showOverlay(); return }
+  try{ await apiFetch('/api/config'); hideOverlay(); initAfterAuth(); }catch(e){ /* 已在 apiFetch 中弹出 */ }
+})();
+
+// 防止未授权状态提前调用 refreshVersion; 改为在 initAfterAuth 内调用
 </script>
 </body>
 </html>
