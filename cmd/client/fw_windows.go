@@ -4,38 +4,93 @@ package main
 
 import (
 	"cuacoj/netcontrol/pkg/fw"
+	"log"
 	"net"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 )
 
-func fwApply(enabled bool, ips []net.IP) error {
-	// Clear old rules then apply
+var fwOpMu sync.Mutex
+
+// fwApply 接受 serverURL 与 dnsIPs，并按避免断线的顺序应用：
+// 1) 临时将出站策略设为允许；2) 清理既有规则；3) 添加控制端、DNS、环回与白名单IP规则；4) 最后切换为出站阻断。
+func fwApply(enabled bool, ips []net.IP, serverURL string, dnsIPs []net.IP) error {
+	fwOpMu.Lock()
+	defer fwOpMu.Unlock()
+	debug := strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "1" || strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "true" || strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "yes"
+	if debug {
+		log.Printf("[FWAPPLY] begin enabled=%v ips=%d dns=%d url=%s", enabled, len(ips), len(dnsIPs), serverURL)
+	}
+	if err := fw.DisableDefaultBlock(); err != nil {
+		return err
+	}
+	if debug {
+		log.Printf("[FWAPPLY] policy -> allowoutbound (reconfigure)")
+	}
 	if err := fw.ClearRules(); err != nil {
 		return err
 	}
+	if debug {
+		log.Printf("[FWAPPLY] cleared old rules")
+	}
 	if !enabled {
-		return fw.DisableDefaultBlock()
+		if debug {
+			log.Printf("[FWAPPLY] disabled: keep allowoutbound")
+		}
+		return nil
 	}
-	if err := fw.EnableDefaultBlock(); err != nil {
+	if debug {
+		log.Printf("[FWAPPLY] allow server by url")
+	}
+	allowServerByURL(serverURL)
+	if debug {
+		log.Printf("[FWAPPLY] allow DNS (%d)", len(dnsIPs))
+	}
+	if err := fw.AllowDNS(dnsIPs); err != nil {
 		return err
 	}
-	// always allow DNS resolution and loopback IPC
-	if err := fw.AllowDNS(); err != nil {
-		return err
+	if debug {
+		log.Printf("[FWAPPLY] allow loopback")
 	}
 	if err := fw.AllowLoopback(); err != nil {
 		return err
 	}
+	if debug {
+		log.Printf("[FWAPPLY] allow whitelist IPs (%d)", len(ips))
+	}
+	if enabled && len(ips) == 0 && debug {
+		log.Printf("[FWAPPLY] WARNING: 启用了控制但白名单域名解析得到 0 个 IP，将导致除控制端/DNS/环回外全部阻断。请检查 DNS 解析或域名配置。")
+	}
 	if err := fw.AllowIPs(ips); err != nil {
 		return err
+	}
+	if err := fw.EnableDefaultBlock(); err != nil {
+		return err
+	}
+	if debug {
+		log.Printf("[FWAPPLY] policy -> blockoutbound (active)")
+		fw.ShowRules()
 	}
 	return nil
 }
 
 func fwClear() error {
+	fwOpMu.Lock()
+	defer fwOpMu.Unlock()
+	debug := strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "1" || strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "true" || strings.ToLower(os.Getenv("NETCTRL_DEBUG")) == "yes"
+	if debug {
+		log.Printf("[FWCLEAR] start")
+	}
 	_ = fw.ClearRules()
-	return fw.DisableDefaultBlock()
+	if err := fw.DisableDefaultBlock(); err != nil {
+		return err
+	}
+	if debug {
+		log.Printf("[FWCLEAR] policy -> allowoutbound done")
+	}
+	return nil
 }
 
 // helper to allow server url (ws://host:port or wss://)

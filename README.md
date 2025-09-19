@@ -48,6 +48,28 @@ CUACOJ NetControl
   - 构建服务端：`go build -o server.exe ./cmd/server`
   - 构建客户端：`go build -o client.exe ./cmd/client`
 
+  安装 (Windows)
+  ----------------
+  方式一：Inno Setup 安装包
+  1. 确保已构建 `client.exe` (以及可选 `server.exe`) 放在仓库根目录。
+  2. 安装 Inno Setup，打开 `installer/NetControl.iss`，编译生成 `dist/CUACOJNetControl_Setup.exe`。
+  3. 运行安装包，默认目录 `C:\Program Files\CUACOJNetControl`，安装后自动以服务方式启动客户端并开机自启。
+
+  方式二：脚本快速安装
+  ```
+  powershell -ExecutionPolicy Bypass -File installer/install.ps1 -InstallDir "C:\Program Files\CUACOJNetControl" -ServerURL "ws://SERVER_IP:8080/ws" -ClientName "node01" -Token "YOUR_TOKEN"
+  ```
+  卸载：
+  ```
+  powershell -ExecutionPolicy Bypass -File installer/uninstall.ps1 -InstallDir "C:\Program Files\CUACOJNetControl"
+  ```
+
+  说明：
+  - 服务名：`CUACOJNetControlClient` 可在服务管理器中查看状态。
+  - 安装脚本会覆盖已有服务同名旧版本（先删除再创建）。
+  - 若需要自更新，可继续使用服务器端的 `/api/client_update` 机制。
+  - 若要定制日志路径或更多选项，可修改脚本或 Inno Setup 脚本中的参数。
+
 运行（示例）
 - 服务端：
   - 默认读取 `config/server.json`；也可通过参数/环境变量覆盖（详见源码 `pkg/config`）。

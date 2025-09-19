@@ -2,3 +2,6 @@ dev/
 logs/
 client.exe
 server.exe
+dist/
+*.iss
+*.ps1

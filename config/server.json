@@ -10,7 +10,7 @@
   "initial_domains": [
     "yzh-acm.com"
   ],
-  "control_enabled": true,
+  "control_enabled": false,
   "whitelist_clients": [],
   "per_client": {},
   "client_version": "0.1.0",

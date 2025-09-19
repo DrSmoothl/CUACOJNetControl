@@ -27,15 +27,27 @@ import (
 
 	cfgpkg "cuacoj/netcontrol/pkg/config"
 	"cuacoj/netcontrol/pkg/proto"
+	"cuacoj/netcontrol/pkg/proxy"
 )
 
 var version = "0.1.0"
 
 // resolveDomainsMap resolves domains to IPs (A/AAAA), following CNAMEs.
 // Prefer enhanced miekg/dns with configurable servers, fallback to net.LookupIP.
+// resolveDomainsMapWithServers: 方案2增强
+// 1) 先用 primary 服务器解析；
+// 2) 若 IP 数低于阈值（每域 < env NETCTRL_DNS_MIN_IPS_PER_DOMAIN 默认 2），则追加 fallback 服务器查询；
+// 3) 聚合所有成功结果去重；
+// 4) 打印成功解析日志（debug时），便于观察真实获得 IP；
+// 5) 失败时仍尝试系统解析作为兜底。
 func resolveDomainsMapWithServers(domains []string, servers []string) (map[string]string, []net.IP) {
 	ipToDomain := map[string]string{}
 	uniq := map[string]struct{}{}
+	fallback := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53", "223.6.6.6:53", "180.76.76.76:53"}
+	minPer := getEnvInt("NETCTRL_DNS_MIN_IPS_PER_DOMAIN", 2)
+	debug := os.Getenv("NETCTRL_DEBUG") != ""
+
+	seenPerDomain := func(m map[string]struct{}) int { return len(m) }
 	for _, d := range domains {
 		d = strings.TrimSpace(d)
 		if d == "" {
@@ -45,8 +57,14 @@ func resolveDomainsMapWithServers(domains []string, servers []string) (map[strin
 		if !strings.HasPrefix(d, "www.") {
 			variants = append(variants, "www."+d)
 		}
+		perDomainIPs := map[string]struct{}{}
 		for _, name := range variants {
 			ips := resolveOneName(name, servers)
+			// 如果少于阈值，尝试 fallback 解析器补充
+			if len(ips) < minPer {
+				more := resolveOneName(name, fallback)
+				ips = append(ips, more...)
+			}
 			if len(ips) == 0 {
 				// fallback to Go resolver
 				if sys, err := net.LookupIP(name); err == nil {
@@ -59,7 +77,16 @@ func resolveDomainsMapWithServers(domains []string, servers []string) (map[strin
 				if _, ok := ipToDomain[s]; !ok {
 					ipToDomain[s] = d
 				}
+				perDomainIPs[s] = struct{}{}
 			}
+		}
+		if debug {
+			// 收集本域实际 IP 列表用于日志
+			var list []string
+			for ip := range perDomainIPs {
+				list = append(list, ip)
+			}
+			log.Printf("[DNS] success %s total=%d ips=%v", d, seenPerDomain(perDomainIPs), list)
 		}
 	}
 	out := make([]net.IP, 0, len(uniq))
@@ -280,70 +307,36 @@ func run(url, name, token string) error {
 		}
 	}
 
+	var localProxy *proxy.Controller
+
 	// platform-specific imports via build tags
 	if runtime.GOOS == "windows" {
 		apply = func() {
-			// prefer servers from config then env
 			cc, _ := cfgpkg.LoadClientConfig("")
 			servers := cc.DNSServers
 			if len(servers) == 0 {
 				servers = parseDNSServers(os.Getenv("NETCTRL_DNS_SERVERS"))
-			} else {
-				// normalize to host:53 if port missing
-				for i, s := range servers {
-					s = strings.TrimSpace(s)
-					if s != "" && !strings.Contains(s, ":") {
-						servers[i] = s + ":53"
-					} else {
-						servers[i] = s
-					}
+			}
+			if localProxy == nil {
+				mr := proxy.NewMultiResolver(servers, getEnvInt("NETCTRL_DNS_MIN_IPS_PER_DOMAIN", 2), 2*time.Second, 2*time.Minute)
+				localProxy = proxy.NewController("127.0.0.1:8888", mr)
+				if err := localProxy.Start(); err != nil {
+					log.Printf("[PROXY] start error: %v", err)
+					return
 				}
 			}
+			localProxy.SetWhitelist(allowedDomains)
 			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[APPLY] start enabled=%v domains=%v dns=%v", controlEnabled, allowedDomains, servers)
-			}
-			m, ips := resolveDomainsMapWithServers(allowedDomains, servers)
-			allowedIPDomain = m
-			// update hosts file to pin domains -> IPs (help against DoH bypass)
-			domToIPs := map[string][]net.IP{}
-			for ipStr, d := range m {
-				ip := net.ParseIP(ipStr)
-				if ip == nil {
-					continue
-				}
-				domToIPs[d] = append(domToIPs[d], ip)
-			}
-			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[APPLY] resolved IPs=%v", ips)
-			}
-			_ = fwApply(controlEnabled, ips)
-			if controlEnabled {
-				if os.Getenv("NETCTRL_DEBUG") != "" {
-					log.Printf("[APPLY] allow control server by url=%s", url)
-				}
-				allowServerByURL(url)
-				if err := updateHosts(domToIPs); err != nil {
-					log.Printf("[HOSTS] update error: %v", err)
-				} else if os.Getenv("NETCTRL_DEBUG") != "" {
-					log.Printf("[HOSTS] updated entries=%d", len(domToIPs))
-				}
-			}
-			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[APPLY] done enabled=%v", controlEnabled)
+				log.Printf("[APPLY] proxy enabled=%v whitelist=%v", controlEnabled, allowedDomains)
 			}
 		}
 		clear = func() {
-			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[CLEAR] start")
-			}
-			_ = fwClear()
-			if err := clearHostsBlock(); err != nil {
-				log.Printf("[HOSTS] clear error: %v", err)
-			} else if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[HOSTS] cleared")
+			if localProxy != nil {
+				_ = localProxy.Stop()
+				localProxy = nil
 			}
 			if os.Getenv("NETCTRL_DEBUG") != "" {
-				log.Printf("[CLEAR] done")
+				log.Printf("[CLEAR] proxy stopped")
 			}
 		}
 	}
