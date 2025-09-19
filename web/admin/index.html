@@ -32,29 +32,20 @@
       opacity: 1; transform: translateY(0); transition: opacity .25s ease, transform .25s ease;
     }
     section[data-panel].hidden{ opacity: 0; transform: translateY(6px); }
-    .token-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172acc,#1e293bcc);backdrop-filter:blur(6px);z-index:9999;}
-    .token-box{width:100%;max-width:420px;padding:32px;border-radius:20px;background:rgba(255,255,255,.9);box-shadow:0 20px 50px -12px rgba(0,0,0,.25);animation:scaleIn .35s ease;}
-    @keyframes scaleIn{0%{transform:scale(.92);opacity:0}100%{transform:scale(1);opacity:1}}
-    .token-overlay h2{font-size:1.4rem;font-weight:600;margin:0 0 8px}
-    .token-overlay p{font-size:.85rem;line-height:1.4;color:#475569;margin-bottom:16px}
-    .hidden{display:none !important}
   </style>
 </head>
 <body class="p-4">
-  <div id="tokenOverlay" class="token-overlay hidden">
-    <div class="token-box">
-      <h2>访问授权</h2>
-      <p>首次部署或 Token 变更后需输入后端生成的管理访问 Token。该值只在后端首次启动时打印一次（或删除 data/token 重置）。</p>
-      <form id="tokenForm" class="flex flex-col gap-3">
-        <input id="tokenInput" type="password" placeholder="粘贴 Token" class="input input-bordered w-full" autocomplete="off" spellcheck="false" />
-        <div class="flex items-center gap-2">
-          <button class="btn btn-primary flex-1" type="submit">进入</button>
-          <button type="button" id="clearStored" class="btn btn-ghost btn-sm">清除</button>
+  <!-- 登录遮罩 -->
+  <div id="loginMask" class="fixed inset-0 z-50 flex items-center justify-center bg-base-200/90 backdrop-blur">
+    <div class="card w-full max-w-sm bg-base-100 shadow-xl">
+      <div class="card-body">
+        <h2 class="card-title mb-2">管理登录</h2>
+        <p class="text-sm muted">请输入管理员 Token（首次启动在服务端日志中显示，丢失删除 data/token 重启生成）</p>
+        <input id="loginToken" type="password" class="input input-bordered w-full mt-3" placeholder="粘贴 Token" autocomplete="off" />
+        <div id="loginErr" class="text-error text-sm mt-2 hidden"></div>
+        <div class="card-actions justify-end mt-4">
+          <button id="loginBtn" class="btn btn-primary">登录</button>
         </div>
-        <div id="tokenErr" class="text-error text-sm h-5"></div>
-      </form>
-      <div class="text-xs mt-4 text-slate-500 leading-relaxed">
-        提示：页面会把 Token 存在浏览器 localStorage（仅当前主机）。如需移除请点击“清除”或清空浏览器存储。
       </div>
     </div>
   </div>
@@ -187,59 +178,33 @@
 <script>
 const $ = sel => document.querySelector(sel);
 const addrEl = $('#addr');
-
-// --- Token + 授权封装 ---
-const TOKEN_KEY = 'netctrl_admin_token';
-function getStoredToken(){ return localStorage.getItem(TOKEN_KEY)||'' }
-function setStoredToken(v){ if(v) localStorage.setItem(TOKEN_KEY,v); }
-function clearStoredToken(){ localStorage.removeItem(TOKEN_KEY); }
-
-const overlay = document.getElementById('tokenOverlay');
-const tokenInput = document.getElementById('tokenInput');
-const tokenErr = document.getElementById('tokenErr');
-function showOverlay(msg){ if(msg) tokenErr.textContent=msg; overlay.classList.remove('hidden'); setTimeout(()=>tokenInput.focus(),30); }
-function hideOverlay(){ overlay.classList.add('hidden'); tokenErr.textContent=''; }
-
-async function apiFetch(url, opts={}){
+let ADMIN_TOKEN = '';
+let authed = false;
+async function authFetch(url, opts={}){
   opts.headers = opts.headers || {};
-  const tk = getStoredToken();
-  if(tk) opts.headers['Authorization'] = 'Bearer '+tk;
-  let resp = await fetch(url, opts);
+  if(ADMIN_TOKEN) opts.headers['X-Admin-Token'] = ADMIN_TOKEN;
+  const resp = await fetch(url, opts);
   if(resp.status === 401){
-    // 仅在我们已附带 token 或访问受保护接口时提示
-    if(tk){ clearStoredToken(); }
-    showOverlay('需要有效 Token');
+    if(authed){ authed=false; ADMIN_TOKEN=''; $('#loginMask').classList.remove('hidden'); }
     throw new Error('unauthorized');
   }
   return resp;
 }
 
-document.getElementById('tokenForm').addEventListener('submit', async e=>{
-  e.preventDefault();
-  const val = tokenInput.value.trim();
-  if(!val){ tokenErr.textContent='请输入 Token'; return }
-  tokenErr.textContent='';
-  try{
-    setStoredToken(val);
-    // 探测一个受保护接口
-    const test = await apiFetch('/api/config');
-    if(test.ok){ hideOverlay(); initAfterAuth(); }
-    else { throw new Error('fail'); }
-  }catch(err){ clearStoredToken(); tokenErr.textContent='无效或已过期'; }
-});
-document.getElementById('clearStored').addEventListener('click', ()=>{ clearStoredToken(); tokenInput.value=''; tokenErr.textContent='已清除'; tokenInput.focus(); });
-
-// --- 原业务逻辑(改为使用 apiFetch) ---
 async function loadConfig(){
-  const cfg = await (await apiFetch('/api/config')).json();
-  $('#enabled').checked = cfg.control_enabled;
-  $('#domains').value = (cfg.domains||[]).join('\n');
-  addrEl.textContent = '';
+  try{
+    const r = await authFetch('/api/config'); if(!r.ok) return;
+    const cfg = await r.json();
+    $('#enabled').checked = cfg.control_enabled;
+    $('#domains').value = (cfg.domains||[]).join('\n');
+    addrEl.textContent = '';
+  }catch(e){}
 }
 
 async function loadWhitelist(){
   try{
-    const data = await (await apiFetch('/api/whitelist')).json();
+    const r = await authFetch('/api/whitelist'); if(!r.ok) return;
+    const data = await r.json();
     $('#whiteNames').value = (data.names||[]).join('\n');
   }catch(e){}
 }
@@ -272,11 +237,15 @@ function renderClients(list){
 }
 
 async function loadClients(){
-  const list = await (await apiFetch('/api/clients')).json();
-  renderClients(filterClients(list));
+  try{
+    const r = await authFetch('/api/clients'); if(!r.ok) return;
+    const list = await r.json();
+    renderClients(filterClients(list));
+  }catch(e){}
 }
 
 function filterEvents(list){
+  if(!Array.isArray(list)) return [];
   const q = ($('#eventSearch').value||'').toLowerCase();
   const f = $('#allowFilter').value;
   return list.filter(e => {
@@ -304,22 +273,23 @@ function renderEvents(list){
 
 let allEvents=[];
 async function loadEvents(){
-  allEvents = await (await apiFetch('/api/events')).json();
-  const filtered = filterEvents(allEvents);
-  renderEvents(filtered);
+  try{
+    const r = await authFetch('/api/events'); if(!r.ok) return;
+    allEvents = await r.json();
+    const filtered = filterEvents(allEvents);
+    renderEvents(filtered);
+  }catch(e){}
 }
 
 $('#saveBtn').addEventListener('click', async () =>{
   const enabled = $('#enabled').checked;
   const domains = $('#domains').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  await apiFetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_enabled:enabled,domains})});
-  loadClients();
+  try{ const r = await authFetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_enabled:enabled,domains})}); if(r.ok) loadClients(); }catch(e){}
 });
 
 $('#saveWhitelist').addEventListener('click', async ()=>{
   const names = $('#whiteNames').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  await apiFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})});
-  loadClients();
+  try{ const r = await authFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})}); if(r.ok) loadClients(); }catch(e){}
 });
 
 ['search','onlineFilter'].forEach(id=>{
@@ -340,18 +310,17 @@ $('#chkAll').addEventListener('change', ()=>{
 });
 async function postBatch(val){
   const names = selectedNames(); if(!names.length){ return }
-  await apiFetch('/api/clients/batch_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names,control_enabled:val})});
-  loadClients();
+  try{ const r = await authFetch('/api/clients/batch_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names,control_enabled:val})}); if(r.ok) loadClients(); }catch(e){}
 }
 $('#btnEnable').addEventListener('click', ()=>postBatch(true));
 $('#btnDisable').addEventListener('click', ()=>postBatch(false));
 $('#btnInherit').addEventListener('click', ()=>postBatch(null));
 
-function initAfterAuth(){
-  loadConfig(); loadWhitelist(); loadClients(); loadEvents();
+// 认证成功后再初始化周期任务
+function initAuthed(){
+  loadConfig(); loadWhitelist(); loadClients(); loadEvents(); refreshVersion();
   setInterval(loadClients, 3000);
   setInterval(loadEvents, 3000);
-  refreshVersion();
 }
 
 // nav 切换
@@ -372,20 +341,21 @@ document.body.addEventListener('click', async (e)=>{
   if(!btn) return;
   const nm = btn.getAttribute('data-name');
   try{
-    const data = await (await apiFetch('/api/whitelist')).json();
-    const names = new Set((data.names||[])); names.add(nm);
-    await apiFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:[...names]})});
+  const r = await authFetch('/api/whitelist'); if(!r.ok) throw new Error();
+  const data = await r.json();
+  const names = new Set((data.names||[])); names.add(nm);
+  await authFetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:[...names]})});
     alert('已加入白名单');
   }catch(err){ alert('操作失败'); }
 });
 
 // --- Version management ---
-async function refreshVersion(){
+async function refreshVersion(){ if(!authed) return;
   const osarch = [
     ['windows','amd64'],['linux','amd64'],['darwin','amd64'],['darwin','arm64']
   ];
   // reuse one os/arch to get version
-  const meta = await (await apiFetch('/api/client_update?os=windows&arch=amd64')).json();
+  let meta = {version:'-'}; try{ const r = await authFetch('/api/client_update?os=windows&arch=amd64'); if(r.ok) meta = await r.json(); }catch(e){}
   $('#curVersion').textContent = meta.version || '-';
   const tb = $('#pkgBody'); tb.innerHTML='';
   for(const [osn,arch] of osarch){
@@ -393,13 +363,12 @@ async function refreshVersion(){
     const ext = osn==='windows'?'.exe':'';
     const fname = `client-${osn}-${arch}${ext}`;
     // HEAD check
-  const res = await apiFetch(`/download/client?os=${osn}&arch=${arch}`, {method:'HEAD'});
-    const ok = res.status===200;
+    let ok=false; try{ const res = await authFetch(`/download/client?os=${osn}&arch=${arch}`, {method:'HEAD'}); ok = res.status===200; }catch(e){}
     row.innerHTML = `<td>${osn}-${arch}</td><td>${fname}</td><td>${ok?'存在':'缺失'}</td>`;
     tb.appendChild(row);
   }
 }
-refreshVersion();
+// refreshVersion 延迟到登录后执行
 
 $('#uploadForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
@@ -407,18 +376,53 @@ $('#uploadForm').addEventListener('submit', async (e)=>{
   const f = $('#fileInput').files[0]; if(!f){ alert('请选择文件'); return }
   const ver = $('#newVersion').value.trim();
   const fd = new FormData(); fd.append('file', f); if(ver) fd.append('version', ver);
-  const resp = await apiFetch(`/admin/upload?os=${osn}&arch=${arch}`, {method:'POST', body:fd});
-  if(resp.ok){ alert('上传成功'); refreshVersion(); } else { alert('上传失败'); }
+  const resp = await authFetch(`/admin/upload?os=${osn}&arch=${arch}`, {method:'POST', body:fd}).catch(()=>null);
+  if(resp && resp.ok){ alert('上传成功'); refreshVersion(); } else { alert('上传失败'); }
 });
 
-// 初始尝试自动认证；无 token 或失败则弹窗
-(async () => {
-  const existing = getStoredToken();
-  if(!existing){ showOverlay(); return }
-  try{ await apiFetch('/api/config'); hideOverlay(); initAfterAuth(); }catch(e){ /* 已在 apiFetch 中弹出 */ }
-})();
+// 登录逻辑（修复：之前被包在上传回调内部导致未绑定事件）
+async function attemptLogin(){
+  const btn = $('#loginBtn');
+  const t = $('#loginToken').value.trim();
+  if(!t){ $('#loginErr').textContent='请输入 token'; $('#loginErr').classList.remove('hidden'); return }
+  btn.disabled = true; btn.classList.add('btn-disabled');
+  $('#loginErr').classList.add('hidden');
+  try{
+    console.debug('login attempt len', t.length);
+    const resp = await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t})});
+    if(resp.ok){
+      ADMIN_TOKEN = t; authed = true;
+      $('#loginMask').classList.add('hidden');
+      initAuthed();
+    }else{
+      let text=''; try{text = await resp.text();}catch(e){}
+      console.warn('login failed status:', resp.status, text);
+      $('#loginErr').textContent='Token 不正确'; $('#loginErr').classList.remove('hidden');
+    }
+  }catch(e){
+    console.error('login error', e);
+    $('#loginErr').textContent='请求失败'; $('#loginErr').classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.classList.remove('btn-disabled');
+  }
+}
+$('#loginBtn').addEventListener('click', attemptLogin);
+$('#loginToken').addEventListener('keydown', e=>{ if(e.key==='Enter') attemptLogin(); });
 
-// 防止未授权状态提前调用 refreshVersion; 改为在 initAfterAuth 内调用
+// 如果服务器未配置 adminHash（后端返回 ok 无校验）则直接隐藏登录
+(async ()=>{
+  try{
+    const resp = await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:''})});
+    if(resp.ok){
+      const data = await resp.json();
+      if(data.status==='ok'){
+        // 无需 token
+  $('#loginMask').classList.add('hidden'); authed = true; initAuthed();
+      }
+    }
+  }catch(e){ /* ignore */ }
+})();
+  // 上传结果提示已在前面处理
 </script>
 </body>
 </html>

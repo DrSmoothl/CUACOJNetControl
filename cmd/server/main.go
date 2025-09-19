@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -45,6 +44,7 @@ type hub struct {
 	perClient      map[string]config.ClientOverride
 	clientVersion  string
 	updateDir      string
+	adminHash      string // sha256 hex of admin UI token
 }
 
 func newHub() *hub {
@@ -91,7 +91,8 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 
 func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Optional token check
-	if h.clientToken != "" { // h.clientToken 持有 sha256 hex 或旧明文
+	if h.clientToken != "" {
+		want := h.clientToken
 		got := r.URL.Query().Get("token")
 		if got == "" {
 			ah := r.Header.Get("Authorization")
@@ -100,11 +101,7 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 				got = ah[len(p):]
 			}
 		}
-		if got == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if !matchToken(got, h.clientToken) {
+		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -190,35 +187,67 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 func (h *hub) handleAPI() http.Handler {
 	mux := http.NewServeMux()
 
-	// token 保护的包装器（静态文件与 /ws 除外）
-	auth := func(next http.HandlerFunc) http.HandlerFunc {
+	// helper: admin auth middleware
+	wrapAdmin := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if h.clientToken != "" {
-				// 读取 header / query
-				var got string
-				if v := r.Header.Get("X-Auth-Token"); v != "" {
-					got = v
+			if h.adminHash == "" { // no protection yet
+				next(w, r)
+				return
+			}
+			// Accept header X-Admin-Token or Bearer token in Authorization
+			provided := r.Header.Get("X-Admin-Token")
+			if provided == "" {
+				ah := r.Header.Get("Authorization")
+				const p = "Bearer "
+				if len(ah) > len(p) && ah[:len(p)] == p {
+					provided = ah[len(p):]
 				}
-				if got == "" {
-					ah := r.Header.Get("Authorization")
-					const p = "Bearer "
-					if len(ah) > len(p) && ah[:len(p)] == p {
-						got = ah[len(p):]
-					}
-				}
-				if got == "" {
-					got = r.URL.Query().Get("token")
-				}
-				if !matchToken(got, h.clientToken) {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
+			}
+			if provided == "" {
+				http.Error(w, "missing admin token", http.StatusUnauthorized)
+				return
+			}
+			hash := sha256.Sum256([]byte(provided))
+			if subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%x", hash[:])), []byte(h.adminHash)) != 1 {
+				http.Error(w, "invalid admin token", http.StatusUnauthorized)
+				return
 			}
 			next(w, r)
 		}
 	}
+
+	// login endpoint (verifies token) - does not set server state, front-end just stores token in memory
+	mux.HandleFunc("/api/admin/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(405)
+			return
+		}
+		if h.adminHash == "" {
+			_ = json.NewEncoder(w).Encode(struct{ Status string }{"ok"})
+			return
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		pt := strings.TrimSpace(body.Token)
+		if pt == "" {
+			http.Error(w, "invalid", http.StatusUnauthorized)
+			return
+		}
+		hash := sha256.Sum256([]byte(pt))
+		if subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%x", hash[:])), []byte(h.adminHash)) != 1 {
+			log.Printf("admin login failed: wrong token (len=%d)", len(pt))
+			http.Error(w, "invalid", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(struct{ Status string }{"ok"})
+	})
 	// client update metadata
-	mux.HandleFunc("/api/client_update", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/client_update", func(w http.ResponseWriter, r *http.Request) {
 		osName := r.URL.Query().Get("os")
 		arch := r.URL.Query().Get("arch")
 		resp := struct {
@@ -237,9 +266,9 @@ func (h *hub) handleAPI() http.Handler {
 			}
 		}
 		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	})
 	// client binary download
-	mux.HandleFunc("/download/client", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/download/client", func(w http.ResponseWriter, r *http.Request) {
 		osName := r.URL.Query().Get("os")
 		arch := r.URL.Query().Get("arch")
 		if osName == "" || arch == "" {
@@ -261,9 +290,9 @@ func (h *hub) handleAPI() http.Handler {
 			return
 		}
 		http.ServeFile(w, r, path)
-	}))
+	})
 	// admin upload client binary
-	mux.HandleFunc("/admin/upload", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/admin/upload", wrapAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(405)
 			return
@@ -317,7 +346,7 @@ func (h *hub) handleAPI() http.Handler {
 		}
 		w.WriteHeader(204)
 	}))
-	mux.HandleFunc("/api/clients", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/clients", func(w http.ResponseWriter, r *http.Request) {
 		h.mu.RLock()
 		defer h.mu.RUnlock()
 		list := make([]proto.State, 0, len(h.clients))
@@ -328,9 +357,9 @@ func (h *hub) handleAPI() http.Handler {
 		}
 		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 		_ = json.NewEncoder(w).Encode(list)
-	}))
+	})
 	// per-client batch config
-	mux.HandleFunc("/api/clients/batch_config", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/clients/batch_config", wrapAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(405)
 			return
@@ -371,7 +400,7 @@ func (h *hub) handleAPI() http.Handler {
 		h.mu.Unlock()
 		w.WriteHeader(204)
 	}))
-	mux.HandleFunc("/api/config", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/config", wrapAdmin(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			h.mu.RLock()
@@ -400,7 +429,7 @@ func (h *hub) handleAPI() http.Handler {
 		}
 	}))
 	// whitelist endpoints
-	mux.HandleFunc("/api/whitelist", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/whitelist", wrapAdmin(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			h.mu.RLock()
@@ -443,11 +472,11 @@ func (h *hub) handleAPI() http.Handler {
 			w.WriteHeader(405)
 		}
 	}))
-	mux.HandleFunc("/api/events", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		h.mu.RLock()
 		defer h.mu.RUnlock()
 		_ = json.NewEncoder(w).Encode(h.events)
-	}))
+	})
 	// static admin UI
 	fs := http.FileServer(http.Dir(h.staticDir))
 	mux.Handle("/", fs)
@@ -476,22 +505,7 @@ func main() {
 	h.controlEnabled = cfg.ControlEnabled
 	h.domains = append([]string(nil), cfg.InitialDomains...)
 	h.staticDir = cfg.StaticDir
-	// Token: 若 data/token 存在则读取哈希；否则首次生成随机 token 输出给管理员并存储其哈希
-	if cfg.ClientToken != "" { // 兼容旧方式（纯文本）
-		// 直接使用旧字段（明文）
-		h.clientToken = cfg.ClientToken
-	} else {
-		plain, hashed, first, err := ensureTokenHash()
-		if err != nil {
-			log.Printf("token init error: %v", err)
-		} else {
-			h.clientToken = hashed
-			if first {
-				log.Printf("[SECURITY] 初次启动生成管理访问 Token: %s", plain)
-				log.Printf("请妥善保存；此 Token 仅显示一次，后端仅保存其哈希。重置请删除 data/token 再重启。")
-			}
-		}
-	}
+	h.clientToken = cfg.ClientToken
 	h.clientVersion = cfg.ClientVersion
 	h.updateDir = cfg.UpdateDir
 	for _, n := range cfg.WhitelistClients {
@@ -504,6 +518,16 @@ func main() {
 	}
 
 	srv := &http.Server{Addr: cfg.Addr, Handler: h.handleAPI()}
+
+	// Admin UI token (only for UI auth). We store hash at data/token.
+	adminHash, plainToken := ensureAdminToken()
+	h.adminHash = adminHash
+	if plainToken != "" {
+		log.Printf("[ADMIN] 首次启动生成管理界面 Token: %s", plainToken)
+		log.Printf("[ADMIN] 重要: 请妥善保存。若丢失可删除 data/token 文件后重启再生成。")
+	}
+	_ = adminHash // reserved for future in-memory compare if we add UI-protected endpoints
+
 	log.Printf("server listening on %s (tls=%v, static=%s)", cfg.Addr, cfg.TLS.Enable, cfg.StaticDir)
 
 	// hot reload watcher
@@ -662,56 +686,31 @@ func persistFull(path string, h *hub) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-// ensureTokenHash ensures a token hash file exists under data/token.
-// Returns (plainToken, hashed, firstCreated, error)
-func ensureTokenHash() (string, string, bool, error) {
+// ensureAdminToken ensures a SHA-256 hash of the admin UI token exists at data/token.
+// Returns (storedHashHex, plainTokenIfNew). If file existed, plainTokenIfNew is empty.
+func ensureAdminToken() (string, string) {
+	// data dir next to executable
 	exe, _ := os.Executable()
 	base := filepath.Dir(exe)
 	dataDir := filepath.Join(base, "data")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return "", "", false, err
+	_ = os.MkdirAll(dataDir, 0o755)
+	path := filepath.Join(dataDir, "token")
+	b, err := os.ReadFile(path)
+	if err == nil && len(strings.TrimSpace(string(b))) > 0 {
+		return strings.TrimSpace(string(b)), ""
 	}
-	tokenFile := filepath.Join(dataDir, "token")
-	if b, err := os.ReadFile(tokenFile); err == nil {
-		// already stored hashed (hex)
-		hash := strings.TrimSpace(string(b))
-		return "", hash, false, nil
-	}
-	// generate new
+	// generate new token
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return "", "", false, err
+		log.Printf("admin token generation failed: %v", err)
+		return "", ""
 	}
-	plain := encodeToken(raw)
-	sum := sha256.Sum256([]byte(plain))
-	hashed := fmt.Sprintf("%x", sum[:])
-	if err := os.WriteFile(tokenFile, []byte(hashed), 0o600); err != nil {
-		return "", "", false, err
+	plain := fmt.Sprintf("%x", raw) // 64 hex chars
+	h := sha256.Sum256([]byte(plain))
+	hhex := fmt.Sprintf("%x", h[:])
+	if err := os.WriteFile(path, []byte(hhex+"\n"), 0o600); err != nil {
+		log.Printf("write admin token hash failed: %v", err)
+		return hhex, plain // still return so user sees it
 	}
-	return plain, hashed, true, nil
-}
-
-func encodeToken(b []byte) string {
-	s := base64.RawURLEncoding.EncodeToString(b)
-	return s
-}
-
-// matchToken 支持两种情况：storedHash 可能是旧明文，或是 sha256 hex
-func matchToken(provided, stored string) bool {
-	if provided == "" || stored == "" {
-		return false
-	}
-	if len(stored) == 64 { // 可能是 sha256 hex
-		sum := sha256.Sum256([]byte(provided))
-		ph := fmt.Sprintf("%x", sum[:])
-		if len(ph) != len(stored) {
-			return false
-		}
-		return subtle.ConstantTimeCompare([]byte(ph), []byte(stored)) == 1
-	}
-	// fallback 明文比较
-	if len(provided) != len(stored) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(stored)) == 1
+	return hhex, plain
 }

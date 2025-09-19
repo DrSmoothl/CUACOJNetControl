@@ -118,19 +118,7 @@ CUACOJ NetControl
  - 调试：设置环境变量 `NETCTRL_DEBUG=1` 可输出更详细的调试日志（DNS 解析、策略应用、以及 Windows 防火墙执行的 `netsh advfirewall` 命令与输出）。
 
 安全
-- 管理/接口访问 Token（前端 + REST + WebSocket）：
-  - 首次启动若 `data/token` 不存在，会自动生成 32 字节随机 Token（Base64URL 无填充），控制台仅显示一次明文：
-    - 日志示例：`[SECURITY] 初次启动生成管理访问 Token: AbCd...`
-  - 服务端只保存其 SHA-256 十六进制哈希（文件：`data/token`，权限 600）。
-  - 之后所有管理请求需携带 Token（任一方式）：
-    - HTTP Header: `Authorization: Bearer <TOKEN>`
-    - 或 `X-Auth-Token: <TOKEN>`
-    - 或查询参数 `?token=<TOKEN>`（不推荐，易被日志记录）。
-  - WebSocket 连接 `/ws` 同样支持上述方式。
-  - 重置：删除 `data/token` 文件后重启服务端，会重新生成并打印新的 Token。
-  - 兼容旧配置：若 `config/server.json` 中仍设置 `client_token`，则继续使用该明文方式（建议迁移并删除该字段以启用哈希存储）。
-- 客户端鉴权保持不变：`config/client.json` 与启动参数中的 `token` 字段仍用于客户端连接校验。
-- 建议结合反向代理(TLS/WSS) 与防火墙限制来源 IP，避免 Token 被中间人窃取（若使用纯 HTTP）。
+- 客户端通过 Bearer Token 鉴权，服务端可选择开启 TLS/WSS。
 - Windows 客户端支持以系统服务运行，并有可选停止密码（环境变量或参数）。
 
 实现要点与限制
