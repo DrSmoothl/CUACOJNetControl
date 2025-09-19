@@ -181,6 +181,8 @@ func resolveOneName(name string, servers []string) []net.IP {
 
 func main() {
 	setupLogging("client")
+	// 先隐藏控制台 (Windows 下有效)。调试时设置 NETCTRL_SHOW_CONSOLE=1 可保留窗口。
+	ensureConsoleHidden()
 	// On Windows, prompt for elevation and relaunch as admin if needed
 	ensureElevated()
 	// preload client.json as defaults
